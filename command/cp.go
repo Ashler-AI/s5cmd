@@ -530,7 +530,9 @@ func (c Copy) Run(ctx context.Context) error {
 		srcurl := object.URL
 		var task parallel.Task
 
-		if object.Size == 0 && !(srcurl.Type == c.dst.Type) {
+		if c.enforceDownloadBytes {
+			object.Size = c.maxDownloadBytes
+		} else if object.Size == 0 && !(srcurl.Type == c.dst.Type) {
 			obj, err := client.Stat(ctx, srcurl)
 			if err == nil {
 				object.Size = obj.Size
