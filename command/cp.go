@@ -26,10 +26,11 @@ import (
 )
 
 const (
-	defaultCopyConcurrency = 5
-	defaultPartSize        = 50 // MiB
-	megabytes              = 1024 * 1024
-	kilobytes              = 1024
+	defaultCopyConcurrency   = 5
+	defaultPartSize          = 50 // MiB
+	megabytes                = 1024 * 1024
+	kilobytes                = 1024
+	maxDownloadBytesFlagName = "max-download-bytes"
 )
 
 const (
@@ -263,11 +264,15 @@ func NewCopyCommandFlags() []cli.Flag {
 }
 
 func NewCopyCommand() *cli.Command {
+	flags := append(NewCopyCommandFlags(), &cli.Int64Flag{
+		Name:  maxDownloadBytesFlagName,
+		Usage: "require an exact encoded byte count for a single-object download",
+	})
 	cmd := &cli.Command{
 		Name:               "cp",
 		HelpName:           "cp",
 		Usage:              "copy objects",
-		Flags:              NewCopyCommandFlags(),
+		Flags:              flags,
 		CustomHelpTemplate: copyHelpTemplate,
 		Before: func(c *cli.Context) error {
 			err := validateCopyCommand(c)
@@ -324,6 +329,8 @@ type Copy struct {
 	metadataDirective     string
 	showProgress          bool
 	progressbar           progressbar.ProgressBar
+	maxDownloadBytes      int64
+	enforceDownloadBytes  bool
 
 	// patterns
 	excludePatterns []*regexp.Regexp
@@ -402,6 +409,8 @@ func NewCopy(c *cli.Context, deleteSource bool) (*Copy, error) {
 		metadataDirective:     c.String("metadata-directive"),
 		showProgress:          c.Bool("show-progress"),
 		progressbar:           commandProgressBar,
+		maxDownloadBytes:      c.Int64(maxDownloadBytesFlagName),
+		enforceDownloadBytes:  c.IsSet(maxDownloadBytesFlagName),
 
 		// region settings
 		srcRegion: c.String("source-region"),
@@ -664,8 +673,19 @@ func (c Copy) doDownload(ctx context.Context, srcurl *url.URL, dsturl *url.URL) 
 		return err
 	}
 
-	writer := newCountingReaderWriter(file, c.progressbar)
+	var writer io.WriterAt = newCountingReaderWriter(file, c.progressbar)
+	if c.enforceDownloadBytes {
+		writer = newExactSizeWriterAt(writer, c.maxDownloadBytes)
+	}
 	size, err := srcClient.Get(ctx, srcurl, writer, c.concurrency, c.partSize)
+	if err == nil && c.enforceDownloadBytes && !c.storageOpts.DryRun {
+		fileInfo, statErr := file.Stat()
+		if statErr != nil {
+			err = statErr
+		} else {
+			err = validateDownloadedSize(fileInfo.Size(), c.maxDownloadBytes)
+		}
+	}
 	file.Close()
 
 	if err != nil {
@@ -1033,8 +1053,26 @@ func validateCopyCommand(c *cli.Context) error {
 		return err
 	}
 
-	if err := checkVersioningWithGoogleEndpoint(c); err != nil {
-		return err
+	exactDownload := c.Command.Name == "cp" &&
+		srcurl.IsRemote() && !dsturl.IsRemote() &&
+		!srcurl.IsWildcard() && !srcurl.IsPrefix() && !srcurl.IsBucket()
+	if c.IsSet(maxDownloadBytesFlagName) {
+		if c.Int64(maxDownloadBytesFlagName) < 0 {
+			return fmt.Errorf("%s must be non-negative", maxDownloadBytesFlagName)
+		}
+		if !exactDownload {
+			return fmt.Errorf("%s can only be used with a single-object download", maxDownloadBytesFlagName)
+		}
+	}
+
+	var versioningErr error
+	if exactDownload {
+		versioningErr = checkDownloadVersioningWithGoogleEndpoint(c)
+	} else {
+		versioningErr = checkVersioningWithGoogleEndpoint(c)
+	}
+	if versioningErr != nil {
+		return versioningErr
 	}
 
 	switch {
@@ -1099,6 +1137,34 @@ type countingReaderWriter struct {
 	fp      *os.File
 	signMap map[int64]struct{}
 	mu      sync.Mutex
+}
+
+var (
+	errDownloadExceedsExpectedSize = errors.New("download exceeds expected encoded size")
+	errDownloadSizeMismatch        = errors.New("downloaded encoded size does not match expected size")
+)
+
+type exactSizeWriterAt struct {
+	dst  io.WriterAt
+	size int64
+}
+
+func newExactSizeWriterAt(dst io.WriterAt, size int64) *exactSizeWriterAt {
+	return &exactSizeWriterAt{dst: dst, size: size}
+}
+
+func (w *exactSizeWriterAt) WriteAt(p []byte, off int64) (int, error) {
+	if off < 0 || off > w.size || int64(len(p)) > w.size-off {
+		return 0, fmt.Errorf("%w: write at offset %d with %d bytes exceeds %d", errDownloadExceedsExpectedSize, off, len(p), w.size)
+	}
+	return w.dst.WriteAt(p, off)
+}
+
+func validateDownloadedSize(actual, expected int64) error {
+	if actual != expected {
+		return fmt.Errorf("%w: got %d bytes, expected %d", errDownloadSizeMismatch, actual, expected)
+	}
+	return nil
 }
 
 func newCountingReaderWriter(file *os.File, pb progressbar.ProgressBar) *countingReaderWriter {
