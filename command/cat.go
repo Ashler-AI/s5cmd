@@ -169,14 +169,14 @@ func validateCatCommand(c *cli.Context) error {
 		return fmt.Errorf("source must be a remote object")
 	}
 
-	if err := checkVersioningWithGoogleEndpoint(c); err != nil {
-		return err
-	}
-
 	if src.IsWildcard() || src.IsPrefix() || src.IsBucket() {
 		if c.String("version-id") != "" {
 			return fmt.Errorf("wildcard/prefix operations are disabled with --version-id flag")
 		}
+	}
+
+	if err := checkDownloadVersioningWithGoogleEndpoint(c); err != nil {
+		return err
 	}
 
 	return nil

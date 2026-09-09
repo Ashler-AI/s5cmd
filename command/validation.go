@@ -38,6 +38,17 @@ func checkVersioningFlagCompatibility(ctx *cli.Context) error {
 // the Google Endpoint. Because the s3 versioning operations are not compatible with
 // GCS's versioning API.
 func checkVersioningWithGoogleEndpoint(ctx *cli.Context) error {
+	return checkVersioningWithGoogleEndpointPolicy(ctx, false)
+}
+
+// checkDownloadVersioningWithGoogleEndpoint allows selecting one immutable GCS
+// generation for exact read operations while retaining the default rejection for
+// all-versions and unsupported versioned operations.
+func checkDownloadVersioningWithGoogleEndpoint(ctx *cli.Context) error {
+	return checkVersioningWithGoogleEndpointPolicy(ctx, true)
+}
+
+func checkVersioningWithGoogleEndpointPolicy(ctx *cli.Context, allowVersionID bool) error {
 	endpoint := ctx.String("endpoint-url")
 	if endpoint == "" {
 		return nil
@@ -48,7 +59,7 @@ func checkVersioningWithGoogleEndpoint(ctx *cli.Context) error {
 		return err
 	}
 
-	if storage.IsGoogleEndpoint(*u) && (ctx.Bool(allVersionsFlagName) || ctx.String(versionIDFlagName) != "") {
+	if storage.IsGoogleEndpoint(*u) && (ctx.Bool(allVersionsFlagName) || (!allowVersionID && ctx.String(versionIDFlagName) != "")) {
 		return fmt.Errorf(versioningNotSupportedWarning, endpoint)
 	}
 

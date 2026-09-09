@@ -126,7 +126,7 @@ func validatePresignCommand(c *cli.Context) error {
 		return fmt.Errorf("remote source %q can not contain glob characters", src)
 	}
 
-	if err := checkVersioningWithGoogleEndpoint(c); err != nil {
+	if err := checkDownloadVersioningWithGoogleEndpoint(c); err != nil {
 		return err
 	}
 

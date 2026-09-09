@@ -50,6 +50,8 @@ const (
 
 	// the key of the object metadata which is used to handle retry decision on NoSuchUpload error
 	metadataKeyRetryID = "s5cmd-upload-retry-id"
+
+	gcsCompatibilityHandlerName = "s5cmd.gcsCompatibility"
 )
 
 // Re-used AWS sessions dramatically improve performance.
@@ -591,6 +593,9 @@ func (s *S3) Presign(ctx context.Context, from *url.URL, expire time.Duration) (
 		Bucket:       aws.String(from.Bucket),
 		Key:          aws.String(from.Path),
 		RequestPayer: s.RequestPayer(),
+	}
+	if from.VersionID != "" {
+		input.SetVersionId(from.VersionID)
 	}
 
 	req, _ := s.api.GetObjectRequest(input)
@@ -1309,6 +1314,9 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 	if err != nil {
 		return nil, err
 	}
+	if IsGoogleEndpoint(endpointURL) {
+		addGCSCompatibilityHandlers(sess)
+	}
 
 	// get region of the bucket and create session accordingly. if the region
 	// is not provided, it means we want region-independent session
@@ -1325,6 +1333,35 @@ func (sc *SessionCache) newSession(ctx context.Context, opts Options) (*session.
 	sc.sessions[opts] = sess
 
 	return sess, nil
+}
+
+// addGCSCompatibilityHandlers adapts the AWS S3 request shape to GCS's XML API.
+// GCS calls object versions "generations" and requires the generation query
+// parameter to be part of the signature. Setting Accept-Encoding explicitly also
+// prevents Go's HTTP transport from transparently decompressing stored gzip bytes.
+func addGCSCompatibilityHandlers(sess *session.Session) {
+	sess.Handlers.Sign.PushFrontNamed(request.NamedHandler{
+		Name: gcsCompatibilityHandlerName,
+		Fn: func(r *request.Request) {
+			if r.HTTPRequest == nil || r.HTTPRequest.URL == nil || r.Operation == nil ||
+				(r.Operation.Name != "GetObject" && r.Operation.Name != "HeadObject") {
+				return
+			}
+
+			query := r.HTTPRequest.URL.Query()
+			if versionID := query.Get("versionId"); versionID != "" {
+				query.Del("versionId")
+				query.Set("generation", versionID)
+				r.HTTPRequest.URL.RawQuery = query.Encode()
+			}
+
+			// Presign returns only a URL, not a required-header bundle. Keep it
+			// usable by ordinary clients without an undisclosed encoding header.
+			if !r.IsPresigned() {
+				r.HTTPRequest.Header.Set("Accept-Encoding", "gzip")
+			}
+		},
+	})
 }
 
 func (sc *SessionCache) clear() {

@@ -566,6 +566,37 @@ all variants will return your GCS buckets.
 acceleration and GCS. If a custom endpoint is provided, it'll fallback to
 path-style.
 
+#### Ashler GCS compatibility patch
+
+This fork adds exact GCS generation selection for read-only `cp`, `cat`,
+`head`, and `presign` operations. Supply `--version-id GENERATION`; the GCS
+transport signs a `generation` query parameter on each object request, including
+multipart retries. AWS endpoints continue using `versionId`. Wildcards,
+all-version operations, and versioned mutations remain unsupported on GCS.
+
+For direct object downloads and metadata reads, stored gzip bytes are preserved
+with an explicit `Accept-Encoding: gzip` header. Presigned URLs remain usable
+without extra required headers; callers using them must manage transcoding
+separately when encoded bytes matter.
+
+`cp --max-download-bytes N` requires exactly N encoded bytes for one remote-to-local
+object. It rejects writes beyond N and rejects short downloads before publishing
+the destination. This is an exact-size contract, not merely an upper limit.
+
+```sh
+s5cmd --endpoint-url https://storage.googleapis.com --numworkers 16 --log error run commands.txt
+```
+
+Example runfile line (use the object's actual generation and encoded size):
+
+```text
+cp --concurrency 1 --version-id 1700000000000001 --max-download-bytes 42 --raw 's3://bucket/literal key' '/absolute/staging/file'
+```
+
+Use a dedicated read-only GCS HMAC credential for source downloads. This fork
+does not manage corpus authority, journal replay, archive verification, or
+publication; those remain responsibilities of its caller.
+
 ### Retry logic
 
 `s5cmd` uses an exponential backoff retry mechanism for transient or potential

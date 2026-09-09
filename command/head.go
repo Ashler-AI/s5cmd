@@ -198,7 +198,11 @@ func validateHeadCommand(c *cli.Context) error {
 		return err
 	}
 
-	if err := checkVersioningWithGoogleEndpoint(c); err != nil {
+	if srcurl.IsBucket() && c.String("version-id") != "" {
+		return fmt.Errorf("version-id can only be used with an object")
+	}
+
+	if err := checkDownloadVersioningWithGoogleEndpoint(c); err != nil {
 		return err
 	}
 
